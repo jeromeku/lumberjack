@@ -1,5 +1,14 @@
 // Package lumberjack provides a rolling logger.
 //
+// Note that this is a fork of lumberjack that adds Google Cloud Storage archiving
+// to the logging stack.  The only change from users' perspective is to specificy a GCS bucket
+// name when instantiating a lumberjack logger.
+//
+// The archiver is triggered when a log rolls over and runs before any log
+// post-processing (i.e., "milling") takes place -- proper sequencing is necessary
+// to ensure that freshly rolled-over logs are uploaded to GCS as is
+// processing takes place.
+//
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
 //
@@ -19,6 +28,7 @@
 // Lumberjack assumes that only one process is writing to the output files.
 // Using the same lumberjack configuration from multiple processes on the same
 // machine will result in improper behavior.
+
 package lumberjack
 
 import (
@@ -28,11 +38,14 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jeromeku/go-gcs/gcs"
 )
 
 const (
@@ -104,7 +117,7 @@ type Logger struct {
 	LocalTime bool `json:"localtime" yaml:"localtime"`
 
 	// Compress determines if the rotated log files should be compressed
-	// using gzip. The default is not to perform compression.
+	// using gzip.
 	Compress bool `json:"compress" yaml:"compress"`
 
 	size int64
@@ -113,6 +126,13 @@ type Logger struct {
 
 	millCh    chan bool
 	startMill sync.Once
+
+	//startGCS initializes GCS client
+	//gcsCh synchronizes handoff between GCS and lumberjack
+	archiveCh     chan bool
+	startArchiver sync.Once
+	Bucket        string
+	archiveDone   chan bool
 }
 
 var (
@@ -199,8 +219,47 @@ func (l *Logger) rotate() error {
 	if err := l.openNew(); err != nil {
 		return err
 	}
+
+	//Archive file on GCS before postprocessing
 	l.mill()
 	return nil
+}
+
+func (l *Logger) archiveOnce(filename string) error {
+	fmt.Println("Now archiving...")
+	objectName := filepath.Base(filename)
+	err := gcs.Upload(l.Bucket, objectName)
+	if err != nil {
+		fmt.Println("GCS: Error during GCS Upload", err)
+		return err
+	}
+	return nil
+}
+
+func (l *Logger) archiveRun(filename string) {
+	for _ = range l.archiveCh {
+		// what am I going to do, log this?
+		_ = l.archiveOnce(filename)
+		fmt.Println("Archiver: Finished upload, now sending signal for milling to proceed")
+		l.archiveDone <- true
+	}
+}
+
+// mill performs post-rotation compression and removal of stale log files,
+// starting the mill goroutine if necessary.
+func (l *Logger) archive(filename string) {
+	l.startArchiver.Do(func() {
+		fmt.Println("Running Archiver init process")
+		l.archiveCh = make(chan bool, 1)
+		l.archiveDone = make(chan bool)
+		gcs.Connect()
+		fmt.Println("Archiver init completed, now starting archiver...")
+		go l.archiveRun(filename)
+	})
+	select {
+	case l.archiveCh <- true:
+	default:
+	}
 }
 
 // openNew opens a new log file for writing, moving any old log file out of the
@@ -227,6 +286,11 @@ func (l *Logger) openNew() error {
 		if err := chown(name, info); err != nil {
 			return err
 		}
+
+		//Send archive signal after file renamed
+		fmt.Printf("Rotator: Rotated to new file %s\n", path.Base(newname))
+		l.archive(newname)
+		time.Sleep(5 * time.Second)
 	}
 
 	// we use truncate here because this should only get called when we've moved
@@ -378,6 +442,10 @@ func (l *Logger) millRunOnce() error {
 func (l *Logger) millRun() {
 	for _ = range l.millCh {
 		// what am I going to do, log this?
+		fmt.Println("Milling: Waiting for signal from Archiver")
+		<-l.archiveDone
+		fmt.Println("Milling: Received signal from archiver, now milling")
+
 		_ = l.millRunOnce()
 	}
 }
@@ -389,6 +457,7 @@ func (l *Logger) mill() {
 		l.millCh = make(chan bool, 1)
 		go l.millRun()
 	})
+	//Wait until archiving is done before doing post-processing
 	select {
 	case l.millCh <- true:
 	default:
