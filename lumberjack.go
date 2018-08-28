@@ -252,7 +252,7 @@ func (l *Logger) archive() {
 	l.startArchiver.Do(func() {
 		fmt.Println("Running Archiver init process")
 		l.archiveCh = make(chan bool, 1)
-		l.archiveDone = make(chan bool)
+		l.archiveDone = make(chan bool, 1)
 		gcs.Connect()
 		fmt.Println("Archiver init completed, now starting archiver...")
 		go l.archiveRun()
@@ -325,6 +325,7 @@ func backupName(name string, local bool) string {
 // would not put it over MaxSize.  If there is no such file or the write would
 // put it over the MaxSize, a new file is created.
 func (l *Logger) openExistingOrNew(writeLen int) error {
+	l.archiveDone <- true
 	l.mill()
 
 	filename := l.filename()
