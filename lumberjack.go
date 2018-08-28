@@ -132,6 +132,7 @@ type Logger struct {
 	startArchiver sync.Once
 	Bucket        string
 	archiveDone   chan bool
+	newname       string //Name of the latest rolled over log
 }
 
 var (
@@ -220,13 +221,14 @@ func (l *Logger) rotate() error {
 	}
 
 	//Archive file on GCS before postprocessing
+	l.archive()
 	l.mill()
 	return nil
 }
 
-func (l *Logger) archiveOnce(filename string) error {
+func (l *Logger) archiveOnce() error {
 	fmt.Println("Now archiving...")
-	objectName := filepath.Base(filename)
+	objectName := filepath.Base(l.newname)
 	err := gcs.Upload(l.Bucket, objectName)
 	if err != nil {
 		fmt.Println("GCS: Error during GCS Upload", err)
@@ -235,9 +237,9 @@ func (l *Logger) archiveOnce(filename string) error {
 	return nil
 }
 
-func (l *Logger) archiveRun(filename string) {
+func (l *Logger) archiveRun() {
 	for _ = range l.archiveCh {
-		_ = l.archiveOnce(filename)
+		_ = l.archiveOnce()
 		fmt.Println("Archiver: Finished upload, now sending signal for milling to proceed")
 		l.archiveDone <- true
 	}
@@ -246,14 +248,14 @@ func (l *Logger) archiveRun(filename string) {
 
 // mill performs post-rotation compression and removal of stale log files,
 // starting the mill goroutine if necessary.
-func (l *Logger) archive(filename string) {
+func (l *Logger) archive() {
 	l.startArchiver.Do(func() {
 		fmt.Println("Running Archiver init process")
 		l.archiveCh = make(chan bool, 1)
 		l.archiveDone = make(chan bool)
 		gcs.Connect()
 		fmt.Println("Archiver init completed, now starting archiver...")
-		go l.archiveRun(filename)
+		go l.archiveRun()
 	})
 	select {
 	case l.archiveCh <- true:
@@ -286,10 +288,8 @@ func (l *Logger) openNew() error {
 			return err
 		}
 
-		//Send archive signal after file renamed
 		fmt.Printf("Rotator: Rotated to new file %s\n", path.Base(newname))
-		l.archive(newname)
-		time.Sleep(5 * time.Second)
+		l.newname = newname
 	}
 
 	// we use truncate here because this should only get called when we've moved
