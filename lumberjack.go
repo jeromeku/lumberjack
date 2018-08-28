@@ -6,8 +6,7 @@
 //
 // The archiver is triggered when a log rolls over and runs before any log
 // post-processing (i.e., "milling") takes place -- proper sequencing is necessary
-// to ensure that freshly rolled-over logs are uploaded to GCS as is
-// processing takes place.
+// to ensure that freshly rolled-over logs are uploaded to GCS as is.
 //
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
@@ -238,11 +237,11 @@ func (l *Logger) archiveOnce(filename string) error {
 
 func (l *Logger) archiveRun(filename string) {
 	for _ = range l.archiveCh {
-		// what am I going to do, log this?
 		_ = l.archiveOnce(filename)
 		fmt.Println("Archiver: Finished upload, now sending signal for milling to proceed")
 		l.archiveDone <- true
 	}
+	fmt.Println("Exiting archiving loop")
 }
 
 // mill performs post-rotation compression and removal of stale log files,
@@ -454,6 +453,7 @@ func (l *Logger) millRun() {
 // starting the mill goroutine if necessary.
 func (l *Logger) mill() {
 	l.startMill.Do(func() {
+		fmt.Println("Miller initiating...")
 		l.millCh = make(chan bool, 1)
 		go l.millRun()
 	})
