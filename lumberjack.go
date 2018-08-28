@@ -1,12 +1,22 @@
 // Package lumberjack provides a rolling logger.
 //
+// ---
+//
+// JK Fork
 // Note that this is a fork of lumberjack that adds Google Cloud Storage archiving
-// to the logging stack.  The only change from users' perspective is to specificy a GCS bucket
+// to the logging stack.  The only change from users' perspective is to specify a GCS bucket
 // name when instantiating a lumberjack logger.
 //
 // The archiver is triggered when a log rolls over and runs before any log
 // post-processing (i.e., "milling") takes place -- proper sequencing is necessary
 // to ensure that freshly rolled-over logs are uploaded to GCS as is.
+//
+// Note also that in origin, mill() was being called each time the log file was being
+// written to -- at top of call to openExistingOrNew.  Unclear why this is the case since the purpose
+// of mill is to perform post-processing after each log rotation (not each time a log is written to).
+// This behavior has been changed to only mill upon calls to rotate.
+//
+// ---
 //
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
@@ -325,7 +335,9 @@ func backupName(name string, local bool) string {
 // would not put it over MaxSize.  If there is no such file or the write would
 // put it over the MaxSize, a new file is created.
 func (l *Logger) openExistingOrNew(writeLen int) error {
-	//l.archiveDone <- true
+	//JK: Not sure why mill was being called here, since it's purpose is to post-process
+	//after log rollover
+
 	//l.mill()
 
 	filename := l.filename()
